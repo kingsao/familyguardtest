@@ -1,29 +1,34 @@
-# 
-# <https://github.com/KFERMercer/OpenWrt-CI>
-#
-# Copyright (C) 2019 P3TERX
-#
-# Copyright (C) 2020 KFERMercer
-#
-name: OpenWrt-CI
+# OpenWrt FamilyGuard 自动化构建工作流
+# 基于 GitHub Actions 构建包含 FamilyGuard 组件的 OpenWrt 固件
+
+name: OpenWrt-FamilyGuard
 
 on:
   schedule:
-    - cron: 0 20 * * *
+    - cron: 0 22 * * *  # 每天22:00自动构建
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/openwrt-familyguard.yml'
+      - 'package/familyguard/**'
+  workflow_dispatch:
+    inputs:
+      build_comment:
+        description: '构建备注'
+        required: false
+        default: '手动触发构建'
 
 permissions:
   contents: read
 
 jobs:
-
-  build_openwrt:
-
-    name: Build OpenWrt Firmware
-
+  build_familyguard:
+    name: Build OpenWrt with FamilyGuard
     runs-on: ubuntu-22.04
-
+    
     steps:
-      - name: Space cleanup and Initialization environment
+      - name: 清理环境并初始化
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
@@ -38,70 +43,473 @@ jobs:
           sudo -E apt -y autoremove --purge
           sudo -E apt clean
           sudo -E timedatectl set-timezone "Asia/Shanghai"
-
-      - name: Checkout OpenWrt
+      
+      - name: 检出lede代码
         uses: actions/checkout@v4
-
-      - name: Free Disk Space (Ubuntu)
+      
+      - name: 释放更多磁盘空间
         uses: jlumbroso/free-disk-space@main
         with:
-          # this might remove tools that are actually needed,
-          # if set to "true" but frees about 6 GB
           tool-cache: true
-          # all of these default to true, but feel free to set to
-          # "false" if necessary for your workflow
           android: true
           dotnet: true
           haskell: true
           large-packages: true
           swap-storage: true
-
-      - name: Update feeds
+      
+      - name: 初始化FamilyGuard组件
         run: |
-          sed -i 's/#src-git helloworld/src-git helloworld/g' ./feeds.conf.default
+          # 创建FamilyGuard目录结构
+          mkdir -p package/familyguard/utils
+          mkdir -p package/familyguard/core
+          mkdir -p package/familyguard/luci-app-familyguard
+          
+          # 创建utils目录的Makefile
+          cat > package/familyguard/utils/Makefile << 'EOF'
+          #
+          # Copyright (C) 2024 FamilyGuard Project
+          #
+          # This is free software, licensed under the GNU General Public License v3.
+          # See /LICENSE for more information.
+          #
+          
+          include $(TOPDIR)/rules.mk
+          
+          PKG_NAME:=familyguard-utils
+          PKG_VERSION:=2.0
+          PKG_RELEASE:=1
+          
+          PKG_MAINTAINER:=FamilyGuard Team <support@familyguard.io>
+          PKG_LICENSE:=GPL-3.0
+          
+          include $(INCLUDE_DIR)/package.mk
+          
+          define Package/familyguard-utils
+            SECTION:=utils
+            CATEGORY:=Utilities
+            TITLE:=FamilyGuard CLI Utilities
+            DEPENDS:=+libuci +libubus +libubox +libjson-c
+            URL:=https://familyguard.org/
+          endef
+          
+          define Package/familyguard-utils/description
+            FamilyGuard CLI utilities for network monitoring and management.
+          endef
+          
+          define Build/Compile
+              $(MAKE) -C $(PKG_BUILD_DIR) \
+                  CC="$(TARGET_CC)" \
+                  CFLAGS="$(TARGET_CFLAGS) $(TARGET_CPPFLAGS)" \
+                  LDFLAGS="$(TARGET_LDFLAGS)"
+          endef
+          
+          define Package/familyguard-utils/install
+              $(INSTALL_DIR) $(1)/usr/bin
+              $(INSTALL_BIN) $(PKG_BUILD_DIR)/familyguard-cli $(1)/usr/bin/
+              $(INSTALL_BIN) $(PKG_BUILD_DIR)/familyguard-report $(1)/usr/bin/
+          endef
+          
+          export OPENWRT_BUILD=1
+          $(eval $(call BuildPackage,familyguard-utils))
+          EOF
+          
+          # 创建core目录的Makefile
+          cat > package/familyguard/core/Makefile << 'EOF'
+          #
+          # Copyright (C) 2024 FamilyGuard Project
+          #
+          # This is free software, licensed under the GNU General Public License v3.
+          # See /LICENSE for more information.
+          #
+          
+          include $(TOPDIR)/rules.mk
+          
+          PKG_NAME:=familyguard-core
+          PKG_VERSION:=2.0
+          PKG_RELEASE:=1
+          
+          PKG_MAINTAINER:=FamilyGuard Team <support@familyguard.io>
+          PKG_LICENSE:=GPL-3.0
+          
+          include $(INCLUDE_DIR)/package.mk
+          
+          define Package/familyguard-core
+            SECTION:=net
+            CATEGORY:=Network
+            TITLE:=FamilyGuard Core Engine
+            DEPENDS:=+libuci +libubus +libubox +libjson-c +libpcap
+            URL:=https://familyguard.org/
+          endef
+          
+          define Package/familyguard-core/description
+            FamilyGuard core engine for deep packet inspection and application identification.
+          endef
+          
+          define Build/Compile
+              $(MAKE) -C $(PKG_BUILD_DIR) \
+                  CC="$(TARGET_CC)" \
+                  CFLAGS="$(TARGET_CFLAGS) $(TARGET_CPPFLAGS)" \
+                  LDFLAGS="$(TARGET_LDFLAGS)"
+          endef
+          
+          define Package/familyguard-core/install
+              $(INSTALL_DIR) $(1)/usr/sbin
+              $(INSTALL_BIN) $(PKG_BUILD_DIR)/familyguardd $(1)/usr/sbin/
+              $(INSTALL_DIR) $(1)/usr/lib
+              $(INSTALL_DATA) $(PKG_BUILD_DIR)/libfamilyguard.so $(1)/usr/lib/
+              $(INSTALL_DIR) $(1)/etc/init.d
+              $(INSTALL_BIN) ./files/familyguard.init $(1)/etc/init.d/familyguard
+              $(INSTALL_DIR) $(1)/etc/config
+              $(INSTALL_CONF) ./files/familyguard.conf $(1)/etc/config/familyguard
+          endef
+          
+          export OPENWRT_BUILD=1
+          $(eval $(call BuildPackage,familyguard-core))
+          EOF
+          
+          # 创建luci-app-familyguard目录的Makefile
+          cat > package/familyguard/luci-app-familyguard/Makefile << 'EOF'
+          #
+          # Copyright (C) 2024 FamilyGuard Project
+          #
+          # This is free software, licensed under the GNU General Public License v3.
+          # See /LICENSE for more information.
+          #
+          
+          include $(TOPDIR)/rules.mk
+          
+          PKG_NAME:=luci-app-familyguard
+          PKG_VERSION:=2.0
+          PKG_RELEASE:=1
+          
+          PKG_MAINTAINER:=FamilyGuard Team <support@familyguard.io>
+          PKG_LICENSE:=GPL-3.0
+          
+          include $(TOPDIR)/feeds/luci/luci.mk
+          
+          # call BuildPackage - OpenWrt buildroot signature
+          $(eval $(call BuildPackage,luci-app-familyguard))
+          EOF
+          
+          # 创建utils示例代码
+          mkdir -p package/familyguard/utils/src
+          cat > package/familyguard/utils/src/familyguard-cli.c << 'EOF'
+          // FamilyGuard CLI utility
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          
+          int main(int argc, char *argv[]) {
+              printf("FamilyGuard CLI Utility v2.0\n");
+              printf("Usage: familyguard-cli [command] [options]\n");
+              printf("Commands:\n");
+              printf("  status        - Show FamilyGuard status\n");
+              printf("  stats         - Show usage statistics\n");
+              printf("  block         - Block a device or application\n");
+              printf("  unblock       - Unblock a device or application\n");
+              printf("  list          - List blocked devices and applications\n");
+              
+              return 0;
+          }
+          EOF
+          
+          cat > package/familyguard/utils/src/familyguard-report.c << 'EOF'
+          // FamilyGuard Reporting Utility
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          
+          int main(int argc, char *argv[]) {
+              printf("FamilyGuard Reporting Utility v2.0\n");
+              printf("Generating usage report...\n");
+              printf("Report generation placeholder.\n");
+              
+              return 0;
+          }
+          EOF
+          
+          # 更新utils的Makefile以支持源代码编译
+          sed -i '/define Build\/Compile/i PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)\n\nMAKE_PATH:=src' package/familyguard/utils/Makefile
+          
+          # 创建core示例代码
+          mkdir -p package/familyguard/core/src
+          mkdir -p package/familyguard/core/files
+          cat > package/familyguard/core/src/familyguardd.c << 'EOF'
+          // FamilyGuard Core Daemon
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <unistd.h>
+          
+          int main(int argc, char *argv[]) {
+              printf("Starting FamilyGuard Core Daemon v2.0\n");
+              printf("Core functionality placeholder.\n");
+              
+              // 模拟守护进程运行
+              while (1) {
+                  sleep(60);
+              }
+              
+              return 0;
+          }
+          EOF
+          
+          # 创建core的初始化脚本
+          cat > package/familyguard/core/files/familyguard.init << 'EOF'#!/bin/sh /etc/rc.common
+          # Copyright (C) 2024 FamilyGuard Project
+          
+          START=95
+          STOP=05
+          USE_PROCD=1
+          
+          start_service() {
+              procd_open_instance
+              procd_set_param command /usr/sbin/familyguardd
+              procd_set_param respawn
+              procd_close_instance
+          }
+          
+          stop_service() {
+              killall familyguardd
+          }
+          EOF
+          
+          chmod +x package/familyguard/core/files/familyguard.init
+          
+          # 创建core的配置文件
+          cat > package/familyguard/core/files/familyguard.conf << 'EOF'config familyguard 'general'
+              option enabled '1'
+              option log_level 'info'
+              option log_file '/var/log/familyguard.log'
+          
+          config familyguard 'webfilter'
+              option enabled '1'
+              option block_adult '1'
+              option block_gaming '0'
+              option block_social '0'
+              option allowed_sites ''
+              option blocked_sites ''
+          
+          config familyguard 'timecontrol'
+              option enabled '0'
+              option start_time '20:00'
+              option end_time '08:00'
+          EOF
+          
+          # 更新core的Makefile以支持源代码编译
+          sed -i '/define Build\/Compile/i PKG_BUILD_DIR:=$(BUILD_DIR)/$(PKG_NAME)-$(PKG_VERSION)\n\nMAKE_PATH:=src' package/familyguard/core/Makefile
+          
+          # 创建luci-app-familyguard的基本结构
+          mkdir -p package/familyguard/luci-app-familyguard/luasrc
+          mkdir -p package/familyguard/luci-app-familyguard/root
+          
+          # 创建luci-app-familyguard的基本文件
+          cat > package/familyguard/luci-app-familyguard/luasrc/controller/familyguard.lua << 'EOF'
+          module("luci.controller.familyguard", package.seeall)
+          
+          function index()
+              entry({"admin", "services", "familyguard"}, cbi("familyguard/settings"), _("FamilyGuard"), 60)
+              entry({"admin", "services", "familyguard", "status"}, call("action_status"))
+          end
+          
+          function action_status()
+              local e = {} 
+              e.running = luci.sys.call("pgrep familyguardd >/dev/null") == 0
+              luci.http.prepare_content("application/json")
+              luci.http.write_json(e)
+          end
+          EOF
+          
+          mkdir -p package/familyguard/luci-app-familyguard/luasrc/model/cbi/familyguard
+          cat > package/familyguard/luci-app-familyguard/luasrc/model/cbi/familyguard/settings.lua << 'EOF'
+          m = Map("familyguard", translate("FamilyGuard Settings"), translate("Configure FamilyGuard parental control settings"))
+          
+          s = m:section(TypedSection, "general", translate("General Settings"))
+          s.anonymous = true
+          
+          o = s:option(Flag, "enabled", translate("Enable FamilyGuard"))
+          o.rmempty = false
+          
+          o = s:option(ListValue, "log_level", translate("Log Level"))
+          o:value("debug", translate("Debug"))
+          o:value("info", translate("Info"))
+          o:value("warn", translate("Warning"))
+          o:value("error", translate("Error"))
+          o.default = "info"
+          
+          s = m:section(TypedSection, "webfilter", translate("Web Filter"))
+          s.anonymous = true
+          
+          o = s:option(Flag, "enabled", translate("Enable Web Filter"))
+          o.rmempty = false
+          
+          o = s:option(Flag, "block_adult", translate("Block Adult Content"))
+          o:depends("enabled", "1")
+          
+          o = s:option(Flag, "block_gaming", translate("Block Gaming Sites"))
+          o:depends("enabled", "1")
+          
+          o = s:option(Flag, "block_social", translate("Block Social Media"))
+          o:depends("enabled", "1")
+          
+          o = s:option(Value, "allowed_sites", translate("Allowed Sites"))
+          o:depends("enabled", "1")
+          o.description = translate("Comma-separated list of allowed websites")
+          
+          o = s:option(Value, "blocked_sites", translate("Blocked Sites"))
+          o:depends("enabled", "1")
+          o.description = translate("Comma-separated list of blocked websites")
+          
+          s = m:section(TypedSection, "timecontrol", translate("Time Control"))
+          s.anonymous = true
+          
+          o = s:option(Flag, "enabled", translate("Enable Time Control"))
+          o.rmempty = false
+          
+          o = s:option(Value, "start_time", translate("Start Time"))
+          o:depends("enabled", "1")
+          o.default = "20:00"
+          
+          o = s:option(Value, "end_time", translate("End Time"))
+          o:depends("enabled", "1")
+          o.default = "08:00"
+          
+          return m
+          EOF
+          
+          # 创建luci-app-familyguard的po文件目录
+          mkdir -p package/familyguard/luci-app-familyguard/po/zh-cn
+          cat > package/familyguard/luci-app-familyguard/po/zh-cn/familyguard.po << 'EOF'
+          msgid "FamilyGuard"
+          msgstr "家庭守护"
+          
+          msgid "FamilyGuard Settings"
+          msgstr "家庭守护设置"
+          
+          msgid "Configure FamilyGuard parental control settings"
+          msgstr "配置家庭守护家长控制设置"
+          
+          msgid "General Settings"
+          msgstr "基本设置"
+          
+          msgid "Enable FamilyGuard"
+          msgstr "启用家庭守护"
+          
+          msgid "Log Level"
+          msgstr "日志级别"
+          
+          msgid "Debug"
+          msgstr "调试"
+          
+          msgid "Info"
+          msgstr "信息"
+          
+          msgid "Warning"
+          msgstr "警告"
+          
+          msgid "Error"
+          msgstr "错误"
+          
+          msgid "Web Filter"
+          msgstr "网页过滤"
+          
+          msgid "Enable Web Filter"
+          msgstr "启用网页过滤"
+          
+          msgid "Block Adult Content"
+          msgstr "阻止成人内容"
+          
+          msgid "Block Gaming Sites"
+          msgstr "阻止游戏网站"
+          
+          msgid "Block Social Media"
+          msgstr "阻止社交媒体"
+          
+          msgid "Allowed Sites"
+          msgstr "允许的网站"
+          
+          msgid "Comma-separated list of allowed websites"
+          msgstr "逗号分隔的允许网站列表"
+          
+          msgid "Blocked Sites"
+          msgstr "阻止的网站"
+          
+          msgid "Comma-separated list of blocked websites"
+          msgstr "逗号分隔的阻止网站列表"
+          
+          msgid "Time Control"
+          msgstr "时间控制"
+          
+          msgid "Enable Time Control"
+          msgstr "启用时间控制"
+          
+          msgid "Start Time"
+          msgstr "开始时间"
+          
+          msgid "End Time"
+          msgstr "结束时间"
+          EOF
+      
+      - name: 更新feeds
+        run: |
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-
-      - name: Generate configuration file
-        run: make defconfig
-
-      - name: Download packages
+          ./scripts/feeds install -p familyguard -a
+      
+      - name: 生成配置文件
+        run: |
+          make defconfig
+          # 启用FamilyGuard相关选项
+          echo "CONFIG_PACKAGE_familyguard-utils=y" >> .config
+          echo "CONFIG_PACKAGE_familyguard-core=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-familyguard=y" >> .config
+          make defconfig
+      
+      - name: 下载软件包
         run: make download -j16
-
-      - name: Compile firmware
+      
+      - name: 编译固件
         run: |
           make -j$(nproc) || make -j1 V=s
           echo "======================="
-          echo "Space usage:"
+          echo "磁盘使用情况:"
           echo "======================="
           df -h
           echo "======================="
           du -h --max-depth=1 ./ --exclude=build_dir --exclude=bin
           du -h --max-depth=1 ./build_dir
           du -h --max-depth=1 ./bin
-
-      - name: Prepare artifact
+      
+      - name: 准备构建产物
         run: |
           mkdir -p ./artifact/package
           mkdir -p ./artifact/buildinfo
+          mkdir -p ./artifact/familyguard
           rm -rf $(find ./bin/targets/ -type d -name "packages")
-          cp -rf $(find ./bin/packages/ -type f -name "*.ipk") ./artifact/package/
+          cp -rf $(find ./bin/packages/ -type f -name "familyguard*.ipk") ./artifact/familyguard/
+          cp -rf $(find ./bin/packages/ -type f -name "*.ipk" | grep -v familyguard) ./artifact/package/
           cp -rf $(find ./bin/targets/ -type f -name "*.buildinfo" -o -name "*.manifest") ./artifact/buildinfo/
-
-      - name: Upload buildinfo
+      
+      - name: 上传构建信息
         uses: actions/upload-artifact@v4
         with:
           name: OpenWrt_buildinfo
           path: ./artifact/buildinfo/
-
-      - name: Upload package
+      
+      - name: 上传软件包
         uses: actions/upload-artifact@v4
         with:
           name: OpenWrt_package
           path: ./artifact/package/
-
-      - name: Upload firmware
+      
+      - name: 上传FamilyGuard组件
         uses: actions/upload-artifact@v4
         with:
-          name: OpenWrt_firmware
+          name: FamilyGuard_packages
+          path: ./artifact/familyguard/
+      
+      - name: 上传固件
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenWrt_familyguard_firmware
           path: ./bin/targets/
